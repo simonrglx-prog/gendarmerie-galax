@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gestion du personnel – Gendarmerie nationale</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="cadre" id="cnx" hidden>
+  <form id="fcnx" novalidate>
+    <h2>Connexion</h2>
+    <p class="aide">Utilisez l'identifiant et le mot de passe remis par votre commandement.</p>
+    <label for="identifiant">Identifiant</label>
+    <input type="text" id="identifiant" autocomplete="username" autocapitalize="none" spellcheck="false">
+    <label for="mdp">Mot de passe</label>
+    <input type="password" id="mdp" autocomplete="current-password">
+    <div class="afficher"><input type="checkbox" id="voir"><label for="voir">Afficher le mot de passe</label></div>
+    <button id="btn" type="submit">Se connecter</button>
+    <div class="alerte" id="alerte" role="alert"><b>Connexion impossible</b><span id="msg"></span></div>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <div class="barre"><div><b id="qui"></b><small id="role"></small></div><button class="sec" id="deco" type="button">Se déconnecter</button></div>
+  <nav id="onglets" role="tablist"></nav>
+  <section id="contenu"></section>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
