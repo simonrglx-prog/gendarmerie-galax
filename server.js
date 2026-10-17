@@ -181,7 +181,9 @@ app.post('/api/absences/:id/statut', session, cmd, h(async (q, s) => {
 }));
 
 app.get('/sante', (q, s) => s.send('ok')); // pour réveiller le site si besoin
-app.use(express.static(path.join(__dirname, 'public')));
+// Les fichiers du site sont à la racine du dépôt : on ne sert que ces trois-là
+const PAGES = { '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css' };
+app.get(Object.keys(PAGES), (q, s) => s.sendFile(path.join(__dirname, PAGES[q.path])));
 app.use('/api', (q, s) => err(s, 404, 'Introuvable.'));
 app.use((e, q, s, next) => {
   if (e.type === 'entity.parse.failed') return err(s, 400, 'Requête invalide.');
