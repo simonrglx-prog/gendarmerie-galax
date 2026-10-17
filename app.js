@@ -3,7 +3,13 @@ const e = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({"&":"&amp;"
 const dt = v => /^\d{4}-\d\d-\d\d$/.test(v) ? v.split("-").reverse().join("/") : e(v);
 const badge = (s, c) => `<span class="b ${c || ""}">${e(s)}</span>`;
 let M = null, D = null, vue = "personnel", fiche = null, edit = null, q = "";
-const cmd = () => M && M.role === "commandement";
+const cmd = () => M && (M.role === "commandement" || M.role === "officier");
+const ROLES = [["gendarme", "Gendarme"], ["officier", "Officier"], ["commandement", "Commandement"]];
+const roleNom = r => (ROLES.find(x => x[0] === r) || [0, r || ""])[1];
+const GRADES = ["Gendarme adjoint volontaire", "Élève gendarme", "Gendarme", "Maréchal des logis", "Maréchal des logis-chef",
+  "Adjudant", "Adjudant-chef", "Major", "Aspirant", "Sous-lieutenant", "Lieutenant", "Capitaine", "Commandant",
+  "Lieutenant-colonel", "Colonel", "Général de brigade", "Général de division", "Général de corps d'armée", "Général d'armée"];
+const gradeOpts = g => [["", "— Choisir un grade —"]].concat(g && !GRADES.includes(g) ? [g] : [], GRADES);
 
 async function api(url, method, body){
   const r = await fetch(url, {method: method || "GET", credentials: "same-origin",
@@ -21,7 +27,7 @@ async function charger(){
   D = d; M = d.moi;
   if(!cmd() && d.personnel.length === 1 && fiche === null) fiche = d.personnel[0].id;
   $("qui").textContent = [M.grade, M.prenom, M.nom].filter(Boolean).join(" ");
-  $("role").textContent = cmd() ? "Commandement" : "Agent";
+  $("role").textContent = roleNom(M.role);
   $("cnx").hidden = true; $("app").hidden = false;
   render(); return true;
 }
@@ -39,11 +45,11 @@ const nomDe = id => { const p = agent(id); return p ? e(p.prenom + " " + p.nom) 
 const lien = id => `<a href="#" data-id="${id}">${nomDe(id)}</a>`;
 
 function vListe(){
-  const f = D.personnel.filter(p => [p.nom, p.prenom, p.roblox, p.discord, p.identifiant, p.unite].join(" ").toLowerCase().includes(q.toLowerCase()));
-  return `<div class="haut"><input type="search" id="rech" placeholder="Rechercher (nom, pseudo Roblox, Discord…)" aria-label="Rechercher" value="${e(q)}">` +
+  const f = D.personnel.filter(p => [p.nom, p.prenom, p.roblox, p.discord, p.identifiant].join(" ").toLowerCase().includes(q.toLowerCase()));
+  return `<div class="haut"><input type="search" id="rech" placeholder="Rechercher (nom, NIGEND, pseudo Roblox, Discord…)" aria-label="Rechercher" value="${e(q)}">` +
     (cmd() ? `<button type="button" data-edit="new">Nouvel agent</button>` : "") + `</div>` +
-    (f.length ? `<div class="tw"><table><thead><tr><th>Nom Prénom</th><th>Grade</th><th>Unité</th><th>Roblox</th><th>Discord</th><th>Statut</th></tr></thead><tbody>` +
-    f.map(p => `<tr><td>${lien(p.id)}</td><td>${e(p.grade)}</td><td>${e(p.unite)}</td><td>${e(p.roblox)}</td><td>${e(p.discord)}</td><td>${e(p.statut)}</td></tr>`).join("") +
+    (f.length ? `<div class="tw"><table><thead><tr><th>Nom Prénom</th><th>NIGEND</th><th>Grade</th><th>Roblox</th><th>Discord</th><th>Statut</th></tr></thead><tbody>` +
+    f.map(p => `<tr><td>${lien(p.id)}</td><td>${e(p.identifiant)}</td><td>${e(p.grade)}</td><td>${e(p.roblox)}</td><td>${e(p.discord)}</td><td>${e(p.statut)}</td></tr>`).join("") +
     `</tbody></table></div>` : `<p class="vide">Aucun agent trouvé.</p>`);
 }
 
@@ -65,7 +71,7 @@ function vFiche(){
   const mien = x => x.agent_id === fiche;
   return `<div class="haut">` + (cmd() ? `<button class="sec pt" type="button" data-retour="1">← Retour à la liste</button><button class="sec pt" type="button" data-edit="${p.id}">Modifier la fiche</button>` : "") + `</div>` +
     `<h2>${e(p.prenom)} ${e(p.nom)}</h2>` +
-    `<dl><dt>Grade</dt><dd>${e(p.grade)}</dd><dt>Unité</dt><dd>${e(p.unite)}</dd><dt>Pseudo Roblox</dt><dd>${e(p.roblox)}</dd><dt>Discord</dt><dd>${e(p.discord)}</dd><dt>Date d'entrée</dt><dd>${dt(p.date_entree)}</dd><dt>Statut</dt><dd>${e(p.statut)}</dd></dl>` +
+    `<dl><dt>NIGEND</dt><dd>${e(p.identifiant)}</dd><dt>Rôle</dt><dd>${e(roleNom(p.role))}</dd><dt>Grade</dt><dd>${e(p.grade)}</dd><dt>Pseudo Roblox</dt><dd>${e(p.roblox)}</dd><dt>Discord</dt><dd>${e(p.discord)}</dd><dt>Date d'entrée</dt><dd>${dt(p.date_entree)}</dd><dt>Statut</dt><dd>${e(p.statut)}</dd></dl>` +
     `<h3>Dossier disciplinaire</h3>` + tabSanc(D.sanctions.filter(mien), false) +
     `<h3>Absences</h3>` + tabAbs(D.absences.filter(mien), false) +
     `<div class="forms">` +
@@ -76,11 +82,11 @@ function vFiche(){
 function vAgentForm(p){
   const nw = !p; p = p || {};
   const f = (k, l, t, x) => `<label for="f-${k}">${l}</label><input id="f-${k}" name="${k}" type="${t || "text"}" value="${e(p[k] || "")}" ${x || ""}>`;
-  const sel = (k, l, o) => `<label for="f-${k}">${l}</label><select id="f-${k}" name="${k}">${o.map(v => `<option${(p[k] || o[0]) === v ? " selected" : ""}>${v}</option>`).join("")}</select>`;
+  const sel = (k, l, o) => { const cur = p[k] || (Array.isArray(o[0]) ? o[0][0] : o[0]); return `<label for="f-${k}">${l}</label><select id="f-${k}" name="${k}">${o.map(v => { const [x, t] = Array.isArray(v) ? v : [v, v]; return `<option value="${e(x)}"${cur === x ? " selected" : ""}>${e(t)}</option>`; }).join("")}</select>`; };
   return `<button class="sec pt" type="button" data-retour="1">← Annuler</button><form class="bloc t12" data-a="${nw ? "agent-new" : "agent-edit"}"><h3>${nw ? "Nouvel agent" : "Modifier la fiche"}</h3><div class="grille">` +
-    (nw ? f("identifiant", "Identifiant", "text", 'required autocapitalize="none"') : "") +
+    (nw ? f("identifiant", "NIGEND", "text", 'required autocapitalize="none"') : "") +
     f("mdp", nw ? "Mot de passe (6 caractères min.)" : "Nouveau mot de passe (vide = inchangé)", "text", `autocomplete="off" ${nw ? "required" : ""}`) +
-    sel("role", "Rôle", ["agent", "commandement"]) + f("nom", "Nom", "text", "required") + f("prenom", "Prénom") + f("grade", "Grade") + f("unite", "Unité") +
+    sel("role", "Rôle", ROLES) + f("nom", "Nom", "text", "required") + f("prenom", "Prénom") + sel("grade", "Grade", gradeOpts(p.grade)) +
     f("roblox", "Pseudo Roblox") + f("discord", "Discord") + f("date_entree", "Date d'entrée", "date") + sel("statut", "Statut", ["En service", "En congé", "Suspendu", "Radié"]) +
     `</div><button>Enregistrer</button><p class="msg" role="alert"></p></form>`;
 }
@@ -90,7 +96,7 @@ $("voir").addEventListener("change", ev => { $("mdp").type = ev.target.checked ?
 $("fcnx").addEventListener("submit", async ev => {
   ev.preventDefault(); $("alerte").classList.remove("on");
   const identifiant = $("identifiant").value.trim(), mdp = $("mdp").value, b = $("btn");
-  if(!identifiant || !mdp){ erreur("Renseignez votre identifiant et votre mot de passe."); return; }
+  if(!identifiant || !mdp){ erreur("Renseignez votre NIGEND et votre mot de passe."); return; }
   b.disabled = true; b.textContent = "Vérification en cours…";
   try{
     const d = await api("/api/login", "POST", {identifiant, mdp});
