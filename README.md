@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/33573746/README.md)
+[README.md](https://github.com/user-attachments/files/33607003/README.md)
 # Gestion du personnel – Gendarmerie nationale (jeu de rôle)
 
 Fiches du personnel (Nom, Prénom, grade, unité, pseudo Roblox, Discord…), dossiers disciplinaires et absences.
@@ -17,7 +17,8 @@ Ouvrez http://localhost:3000. Un compte `admin` est créé au premier lancement
 - Autres variables : `NODE_ENV=production`, `ADMIN_PASSWORD` (mot de passe du compte admin créé au premier démarrage).
 
 ## Rôles
-- **agent** : voit sa fiche, son dossier et ses absences ; peut déclarer une absence (« En attente »).
-- **commandement** : voit tout le monde ; crée/modifie les agents, réinitialise les mots de passe,
-  ajoute et annule des sanctions, valide ou refuse les absences.
+- **gendarme** : voit sa fiche, son dossier et ses absences ; peut déclarer une absence (« En attente »).
+- **officier** et **commandement** : voient tout le monde ; créent/modifient les agents, réinitialisent les mots de passe,
+  ajoutent et annulent des sanctions, valident ou refusent les absences.
+- L'identifiant de connexion est le **NIGEND**.
 - Un agent au statut **Radié** ne peut plus se connecter.
