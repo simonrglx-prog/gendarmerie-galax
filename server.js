@@ -1,195 +1,147 @@
-const express = require('express');
-const { createClient } = require('@libsql/client');
-const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
-const path = require('path');
+const $ = id => document.getElementById(id);
+const e = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const dt = v => /^\d{4}-\d\d-\d\d$/.test(v) ? v.split("-").reverse().join("/") : e(v);
+const badge = (s, c) => `<span class="b ${c || ""}">${e(s)}</span>`;
+let M = null, D = null, vue = "personnel", fiche = null, edit = null, q = "";
+const cmd = () => M && (M.role === "commandement" || M.role === "officier");
+const ROLES = [["gendarme", "Gendarme"], ["officier", "Officier"], ["commandement", "Commandement"]];
+const roleNom = r => (ROLES.find(x => x[0] === r) || [0, r || ""])[1];
+const GRADES = ["Gendarme adjoint volontaire", "Élève gendarme", "Gendarme", "Maréchal des logis", "Maréchal des logis-chef",
+  "Adjudant", "Adjudant-chef", "Major", "Aspirant", "Sous-lieutenant", "Lieutenant", "Capitaine", "Commandant",
+  "Lieutenant-colonel", "Colonel", "Général de brigade", "Général de division", "Général de corps d'armée", "Général d'armée"];
+const gradeOpts = g => [["", "— Choisir un grade —"]].concat(g && !GRADES.includes(g) ? [g] : [], GRADES);
 
-const PORT = process.env.PORT || 3000;
-const PROD = process.env.NODE_ENV === 'production';
+async function api(url, method, body){
+  const r = await fetch(url, {method: method || "GET", credentials: "same-origin",
+    headers: body ? {"Content-Type": "application/json"} : {}, body: body ? JSON.stringify(body) : undefined});
+  let d = {}; try{ d = await r.json(); }catch(x){}
+  if(d.expire) montrerConnexion();
+  return d;
+}
+function montrerConnexion(){ M = D = fiche = edit = null; $("app").hidden = true; $("cnx").hidden = false; }
+function erreur(t){ $("msg").textContent = t; $("alerte").classList.add("on"); }
 
-// ---------- Base de données ----------
-// En ligne : base Turso (gratuite, données conservées). En local : simple fichier data.db.
-const db = createClient({
-  url: process.env.TURSO_DATABASE_URL || 'file:' + (process.env.DB_FILE || path.join(__dirname, 'data.db')),
-  authToken: process.env.TURSO_AUTH_TOKEN
-});
-const run = (sql, args = []) => db.execute({ sql, args });
-const all = async (sql, args = []) => (await run(sql, args)).rows.map(r => ({ ...r }));
-const one = async (sql, args = []) => (await all(sql, args))[0];
-
-async function init() {
-  await db.executeMultiple(`
-CREATE TABLE IF NOT EXISTS agents(
-  id INTEGER PRIMARY KEY, identifiant TEXT UNIQUE NOT NULL COLLATE NOCASE, mdp_hash TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'agent', nom TEXT NOT NULL, prenom TEXT DEFAULT '', grade TEXT DEFAULT '',
-  unite TEXT DEFAULT '', roblox TEXT DEFAULT '', discord TEXT DEFAULT '', date_entree TEXT DEFAULT '',
-  statut TEXT NOT NULL DEFAULT 'En service');
-CREATE TABLE IF NOT EXISTS sanctions(
-  id INTEGER PRIMARY KEY, agent_id INTEGER NOT NULL REFERENCES agents(id),
-  date TEXT, type TEXT, motif TEXT, par TEXT, annulee INTEGER DEFAULT 0);
-CREATE TABLE IF NOT EXISTS absences(
-  id INTEGER PRIMARY KEY, agent_id INTEGER NOT NULL REFERENCES agents(id),
-  debut TEXT, fin TEXT, motif TEXT, statut TEXT);
-CREATE TABLE IF NOT EXISTS sessions(
-  token TEXT PRIMARY KEY, agent_id INTEGER NOT NULL REFERENCES agents(id), expire INTEGER);
-`);
-  if (!(await one('SELECT 1 AS x FROM agents LIMIT 1'))) {
-    const mdp = process.env.ADMIN_PASSWORD || crypto.randomBytes(6).toString('base64url');
-    await run("INSERT INTO agents(identifiant,mdp_hash,role,nom,grade) VALUES('admin',?,'commandement','Administrateur','Commandement')", [bcrypt.hashSync(mdp, 10)]);
-    console.log(`\n>>> Compte créé : identifiant "admin" – mot de passe "${mdp}" (changez-le dans l'interface)\n`);
-  }
+async function charger(){
+  const d = await api("/api/donnees");
+  if(!d.ok){ montrerConnexion(); return false; }
+  D = d; M = d.moi;
+  if(!cmd() && d.personnel.length === 1 && fiche === null) fiche = d.personnel[0].id;
+  $("qui").textContent = [M.grade, M.prenom, M.nom].filter(Boolean).join(" ");
+  $("role").textContent = roleNom(M.role);
+  $("cnx").hidden = true; $("app").hidden = false;
+  render(); return true;
 }
 
-// ---------- Utilitaires ----------
-const sha = t => crypto.createHash('sha256').update(t).digest('hex');
-const txt = (v, max = 500) => String(v == null ? '' : v).trim().slice(0, max);
-const dateOk = v => /^\d{4}-\d{2}-\d{2}$/.test(v);
-const aujourdhui = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
-const STATUTS = ['En service', 'En congé', 'Suspendu', 'Radié'];
-const TYPES = ['Avertissement', 'Blâme', 'Mise à pied', 'Retrait de grade', 'Radiation'];
-const CHAMPS = ['nom', 'prenom', 'grade', 'unite', 'roblox', 'discord', 'date_entree', 'statut'];
-const DUMMY = bcrypt.hashSync('x', 10);
-const err = (s, code, message) => s.status(code).json({ ok: false, message });
-const h = fn => (q, s, next) => Promise.resolve(fn(q, s, next)).catch(next); // transmet les erreurs async
-
-// ---------- Application ----------
-const app = express();
-app.disable('x-powered-by');
-app.set('trust proxy', 1);
-app.use(express.json({ limit: '50kb' }));
-app.use((q, s, next) => {
-  s.set({
-    'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin',
-    'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src https://cdn.jsdelivr.net; frame-ancestors 'none'"
-  });
-  next();
-});
-
-const session = h(async (q, s, next) => {
-  const m = (q.headers.cookie || '').match(/(?:^|; )sid=([0-9a-f]+)/);
-  if (m) {
-    const a = await one('SELECT a.* FROM sessions x JOIN agents a ON a.id=x.agent_id WHERE x.token=? AND x.expire>?', [sha(m[1]), Date.now()]);
-    if (a && a.statut !== 'Radié') { q.moi = a; q.sid = sha(m[1]); }
-  }
-  if (!q.moi) return s.status(401).json({ ok: false, expire: true, message: 'Session expirée. Reconnectez-vous.' });
-  next();
-});
-const cmd = (q, s, next) => q.moi.role === 'commandement' ? next() : err(s, 403, 'Action réservée au commandement.');
-
-const essais = new Map();
-app.post('/api/login', h(async (q, s) => {
-  const id = txt(q.body.identifiant, 40), mdp = String(q.body.mdp || '');
-  if (!id || !mdp) return err(s, 400, 'Renseignez identifiant et mot de passe.');
-  const cle = q.ip + '|' + id.toLowerCase(), e = essais.get(cle) || { n: 0, t: 0 };
-  if (e.n >= 5 && Date.now() < e.t) return err(s, 429, 'Trop de tentatives. Réessayez dans 10 minutes.');
-  const a = await one('SELECT * FROM agents WHERE identifiant=?', [id]);
-  const ok = bcrypt.compareSync(mdp, a ? a.mdp_hash : DUMMY) && a && a.statut !== 'Radié';
-  if (!ok) {
-    essais.set(cle, { n: (Date.now() > e.t ? 0 : e.n) + 1, t: Date.now() + 600000 });
-    return err(s, 401, 'Identifiant ou mot de passe incorrect.');
-  }
-  essais.delete(cle);
-  await run('DELETE FROM sessions WHERE expire<?', [Date.now()]);
-  const token = crypto.randomBytes(32).toString('hex');
-  await run('INSERT INTO sessions(token,agent_id,expire) VALUES(?,?,?)', [sha(token), a.id, Date.now() + 8 * 3600e3]);
-  s.set('Set-Cookie', `sid=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${PROD ? '; Secure' : ''}`);
-  s.json({ ok: true });
-}));
-
-app.post('/api/logout', session, h(async (q, s) => {
-  await run('DELETE FROM sessions WHERE token=?', [q.sid]);
-  s.set('Set-Cookie', 'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
-  s.json({ ok: true });
-}));
-
-app.get('/api/donnees', session, h(async (q, s) => {
-  const c = q.moi.role === 'commandement', p = c ? [] : [q.moi.id];
-  const cols = 'id,identifiant,role,nom,prenom,grade,unite,roblox,discord,date_entree,statut';
-  s.json({
-    ok: true,
-    moi: { id: q.moi.id, nom: q.moi.nom, prenom: q.moi.prenom, grade: q.moi.grade, role: q.moi.role },
-    personnel: await all(`SELECT ${cols} FROM agents${c ? '' : ' WHERE id=?'} ORDER BY nom, prenom`, p),
-    sanctions: await all(`SELECT * FROM sanctions${c ? '' : ' WHERE agent_id=?'} ORDER BY date DESC, id DESC`, p),
-    absences: await all(`SELECT * FROM absences${c ? '' : ' WHERE agent_id=?'} ORDER BY debut DESC, id DESC`, p)
-  });
-}));
-
-function lireAgent(b) {
-  const o = {};
-  CHAMPS.forEach(k => o[k] = txt(b[k], 100));
-  if (!o.nom) return { erreur: 'Le nom est obligatoire.' };
-  if (!STATUTS.includes(o.statut)) o.statut = 'En service';
-  if (o.date_entree && !dateOk(o.date_entree)) return { erreur: "Date d'entrée invalide." };
-  o.role = b.role === 'commandement' ? 'commandement' : 'agent';
-  return { o };
+function render(){
+  $("onglets").innerHTML = [["personnel", cmd() ? "Personnel" : "Ma fiche"], ["sanctions", "Sanctions"], ["absences", "Absences"]]
+    .map(a => `<button type="button" role="tab" data-vue="${a[0]}" aria-selected="${vue === a[0]}">${a[1]}</button>`).join("");
+  $("contenu").innerHTML = vue === "sanctions" ? vSanctions() : vue === "absences" ? vAbsences()
+    : edit !== null ? vAgentForm(edit === "new" ? null : D.personnel.find(p => p.id === edit))
+    : fiche !== null ? vFiche() : vListe();
 }
 
-app.post('/api/agents', session, cmd, h(async (q, s) => {
-  const { o, erreur } = lireAgent(q.body), id = txt(q.body.identifiant, 40), mdp = String(q.body.mdp || '');
-  if (erreur) return err(s, 400, erreur);
-  if (!id) return err(s, 400, "L'identifiant est obligatoire.");
-  if (mdp.length < 6) return err(s, 400, 'Mot de passe trop court (6 caractères minimum).');
-  if (await one('SELECT 1 AS x FROM agents WHERE identifiant=?', [id])) return err(s, 409, 'Cet identifiant existe déjà.');
-  const r = await run('INSERT INTO agents(identifiant,mdp_hash,role,nom,prenom,grade,unite,roblox,discord,date_entree,statut) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-    [id, bcrypt.hashSync(mdp, 10), o.role, o.nom, o.prenom, o.grade, o.unite, o.roblox, o.discord, o.date_entree, o.statut]);
-  s.json({ ok: true, id: Number(r.lastInsertRowid) });
-}));
+const agent = id => D.personnel.find(p => p.id === id);
+const nomDe = id => { const p = agent(id); return p ? e(p.prenom + " " + p.nom) : "—"; };
+const lien = id => `<a href="#" data-id="${id}">${nomDe(id)}</a>`;
 
-app.put('/api/agents/:id', session, cmd, h(async (q, s) => {
-  const a = await one('SELECT * FROM agents WHERE id=?', [Number(q.params.id)]);
-  if (!a) return err(s, 404, 'Agent introuvable.');
-  const { o, erreur } = lireAgent(q.body), mdp = String(q.body.mdp || '');
-  if (erreur) return err(s, 400, erreur);
-  if (mdp && mdp.length < 6) return err(s, 400, 'Mot de passe trop court (6 caractères minimum).');
-  if (a.id === q.moi.id && (o.role !== 'commandement' || o.statut === 'Radié')) return err(s, 400, 'Vous ne pouvez pas retirer vos propres droits.');
-  await run('UPDATE agents SET role=?,nom=?,prenom=?,grade=?,unite=?,roblox=?,discord=?,date_entree=?,statut=? WHERE id=?',
-    [o.role, o.nom, o.prenom, o.grade, o.unite, o.roblox, o.discord, o.date_entree, o.statut, a.id]);
-  if (mdp) {
-    await run('UPDATE agents SET mdp_hash=? WHERE id=?', [bcrypt.hashSync(mdp, 10), a.id]);
-    if (a.id !== q.moi.id) await run('DELETE FROM sessions WHERE agent_id=?', [a.id]);
-  }
-  s.json({ ok: true });
-}));
+function vListe(){
+  const f = D.personnel.filter(p => [p.nom, p.prenom, p.roblox, p.discord, p.identifiant].join(" ").toLowerCase().includes(q.toLowerCase()));
+  return `<div class="haut"><input type="search" id="rech" placeholder="Rechercher (nom, NIGEND, pseudo Roblox, Discord…)" aria-label="Rechercher" value="${e(q)}">` +
+    (cmd() ? `<button type="button" data-edit="new">Nouvel agent</button>` : "") + `</div>` +
+    (f.length ? `<div class="tw"><table><thead><tr><th>Nom Prénom</th><th>NIGEND</th><th>Grade</th><th>Roblox</th><th>Discord</th><th>Statut</th></tr></thead><tbody>` +
+    f.map(p => `<tr><td>${lien(p.id)}</td><td>${e(p.identifiant)}</td><td>${e(p.grade)}</td><td>${e(p.roblox)}</td><td>${e(p.discord)}</td><td>${e(p.statut)}</td></tr>`).join("") +
+    `</tbody></table></div>` : `<p class="vide">Aucun agent trouvé.</p>`);
+}
 
-const existe = async id => !!(await one('SELECT 1 AS x FROM agents WHERE id=?', [id]));
+function tabSanc(a, avecNom){
+  return a.length ? `<div class="tw"><table><thead><tr><th>Date</th>${avecNom ? "<th>Agent</th>" : ""}<th>Type</th><th>Motif</th><th>Par</th>${cmd() ? "<th></th>" : ""}</tr></thead><tbody>` +
+    a.map(s => `<tr class="${s.annulee ? "ann" : ""}"><td>${dt(s.date)}</td>${avecNom ? `<td>${lien(s.agent_id)}</td>` : ""}<td>${e(s.type)}${s.annulee ? " " + badge("Annulée") : ""}</td><td>${e(s.motif)}</td><td>${e(s.par)}</td>` +
+      (cmd() ? `<td>${s.annulee ? "" : `<button class="pt sec" data-annuler="${s.id}">Annuler</button>`}</td>` : "") + `</tr>`).join("") + `</tbody></table></div>` : `<p class="vide">Aucune sanction.</p>`;
+}
+function tabAbs(a, avecNom){
+  return a.length ? `<div class="tw"><table><thead><tr>${avecNom ? "<th>Agent</th>" : ""}<th>Du</th><th>Au</th><th>Motif</th><th>Statut</th>${cmd() ? "<th></th>" : ""}</tr></thead><tbody>` +
+    a.map(x => `<tr>${avecNom ? `<td>${lien(x.agent_id)}</td>` : ""}<td>${dt(x.debut)}</td><td>${dt(x.fin)}</td><td>${e(x.motif)}</td><td>${badge(x.statut, {"Validée":"v","Refusée":"r"}[x.statut])}</td>` +
+      (cmd() ? `<td>${x.statut === "En attente" ? `<button class="pt" data-act="Validée" data-abs="${x.id}">Valider</button> <button class="pt sec" data-act="Refusée" data-abs="${x.id}">Refuser</button>` : ""}</td>` : "") + `</tr>`).join("") + `</tbody></table></div>` : `<p class="vide">Aucune absence.</p>`;
+}
+const vSanctions = () => `<h3 class="t0">Sanctions</h3>` + tabSanc(D.sanctions, true);
+const vAbsences = () => `<h3 class="t0">Absences</h3>` + tabAbs(D.absences, true);
 
-app.post('/api/sanctions', session, cmd, h(async (q, s) => {
-  const aid = Number(q.body.agent_id), type = txt(q.body.type, 40), motif = txt(q.body.motif);
-  if (!(await existe(aid))) return err(s, 400, 'Agent inconnu.');
-  if (!TYPES.includes(type) || !motif) return err(s, 400, 'Le type et le motif sont obligatoires.');
-  await run('INSERT INTO sanctions(agent_id,date,type,motif,par) VALUES(?,?,?,?,?)',
-    [aid, aujourdhui(), type, motif, `${q.moi.prenom} ${q.moi.nom}`.trim()]);
-  s.json({ ok: true });
-}));
-app.post('/api/sanctions/:id/annuler', session, cmd, h(async (q, s) => {
-  await run('UPDATE sanctions SET annulee=1 WHERE id=?', [Number(q.params.id)]);
-  s.json({ ok: true });
-}));
+function vFiche(){
+  const p = agent(fiche); if(!p){ fiche = null; return vListe(); }
+  const mien = x => x.agent_id === fiche;
+  return `<div class="haut">` + (cmd() ? `<button class="sec pt" type="button" data-retour="1">← Retour à la liste</button><button class="sec pt" type="button" data-edit="${p.id}">Modifier la fiche</button>` : "") + `</div>` +
+    `<h2>${e(p.prenom)} ${e(p.nom)}</h2>` +
+    `<dl><dt>NIGEND</dt><dd>${e(p.identifiant)}</dd><dt>Rôle</dt><dd>${e(roleNom(p.role))}</dd><dt>Grade</dt><dd>${e(p.grade)}</dd><dt>Pseudo Roblox</dt><dd>${e(p.roblox)}</dd><dt>Discord</dt><dd>${e(p.discord)}</dd><dt>Date d'entrée</dt><dd>${dt(p.date_entree)}</dd><dt>Statut</dt><dd>${e(p.statut)}</dd></dl>` +
+    `<h3>Dossier disciplinaire</h3>` + tabSanc(D.sanctions.filter(mien), false) +
+    `<h3>Absences</h3>` + tabAbs(D.absences.filter(mien), false) +
+    `<div class="forms">` +
+    (cmd() ? `<form class="bloc" data-a="sanction"><h3>Nouvelle sanction</h3><label for="s-type">Type</label><select id="s-type" name="type"><option>Avertissement</option><option>Blâme</option><option>Mise à pied</option><option>Retrait de grade</option><option>Radiation</option></select><label for="s-motif">Motif</label><textarea id="s-motif" name="motif" maxlength="500" required></textarea><button>Enregistrer la sanction</button><p class="msg" role="alert"></p></form>` : "") +
+    `<form class="bloc" data-a="absence"><h3>${cmd() ? "Enregistrer une absence" : "Déclarer une absence"}</h3><label for="a-d">Du</label><input id="a-d" type="date" name="debut" required><label for="a-f">Au</label><input id="a-f" type="date" name="fin" required><label for="a-m">Motif</label><input id="a-m" type="text" name="motif" maxlength="200"><button>${cmd() ? "Enregistrer" : "Envoyer la demande"}</button><p class="msg" role="alert"></p></form></div>`;
+}
 
-app.post('/api/absences', session, h(async (q, s) => {
-  const c = q.moi.role === 'commandement', aid = c && q.body.agent_id ? Number(q.body.agent_id) : q.moi.id;
-  const { debut, fin } = q.body, motif = txt(q.body.motif, 200);
-  if (!(await existe(aid))) return err(s, 400, 'Agent inconnu.');
-  if (!dateOk(debut) || !dateOk(fin) || fin < debut) return err(s, 400, 'Vérifiez les dates (la fin ne peut pas précéder le début).');
-  await run('INSERT INTO absences(agent_id,debut,fin,motif,statut) VALUES(?,?,?,?,?)', [aid, debut, fin, motif, c ? 'Validée' : 'En attente']);
-  s.json({ ok: true });
-}));
-app.post('/api/absences/:id/statut', session, cmd, h(async (q, s) => {
-  if (!['Validée', 'Refusée'].includes(q.body.statut)) return err(s, 400, 'Statut invalide.');
-  await run('UPDATE absences SET statut=? WHERE id=?', [q.body.statut, Number(q.params.id)]);
-  s.json({ ok: true });
-}));
+function vAgentForm(p){
+  const nw = !p; p = p || {};
+  const f = (k, l, t, x) => `<label for="f-${k}">${l}</label><input id="f-${k}" name="${k}" type="${t || "text"}" value="${e(p[k] || "")}" ${x || ""}>`;
+  const sel = (k, l, o) => { const cur = p[k] || (Array.isArray(o[0]) ? o[0][0] : o[0]); return `<label for="f-${k}">${l}</label><select id="f-${k}" name="${k}">${o.map(v => { const [x, t] = Array.isArray(v) ? v : [v, v]; return `<option value="${e(x)}"${cur === x ? " selected" : ""}>${e(t)}</option>`; }).join("")}</select>`; };
+  return `<button class="sec pt" type="button" data-retour="1">← Annuler</button><form class="bloc t12" data-a="${nw ? "agent-new" : "agent-edit"}"><h3>${nw ? "Nouvel agent" : "Modifier la fiche"}</h3><div class="grille">` +
+    (nw ? f("identifiant", "NIGEND", "text", 'required autocapitalize="none"') : "") +
+    f("mdp", nw ? "Mot de passe (6 caractères min.)" : "Nouveau mot de passe (vide = inchangé)", "text", `autocomplete="off" ${nw ? "required" : ""}`) +
+    sel("role", "Rôle", ROLES) + f("nom", "Nom", "text", "required") + f("prenom", "Prénom") + sel("grade", "Grade", gradeOpts(p.grade)) +
+    f("roblox", "Pseudo Roblox") + f("discord", "Discord") + f("date_entree", "Date d'entrée", "date") + sel("statut", "Statut", ["En service", "En congé", "Suspendu", "Radié"]) +
+    `</div><button>Enregistrer</button><p class="msg" role="alert"></p></form>`;
+}
 
-app.get('/sante', (q, s) => s.send('ok')); // pour réveiller le site si besoin
-// Les fichiers du site sont à la racine du dépôt : on ne sert que ces trois-là
-const PAGES = { '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css' };
-app.get(Object.keys(PAGES), (q, s) => s.sendFile(path.join(__dirname, PAGES[q.path])));
-app.use('/api', (q, s) => err(s, 404, 'Introuvable.'));
-app.use((e, q, s, next) => {
-  if (e.type === 'entity.parse.failed') return err(s, 400, 'Requête invalide.');
-  console.error(e);
-  err(s, 500, 'Erreur du serveur.');
+$("voir").addEventListener("change", ev => { $("mdp").type = ev.target.checked ? "text" : "password"; });
+
+$("fcnx").addEventListener("submit", async ev => {
+  ev.preventDefault(); $("alerte").classList.remove("on");
+  const identifiant = $("identifiant").value.trim(), mdp = $("mdp").value, b = $("btn");
+  if(!identifiant || !mdp){ erreur("Renseignez votre NIGEND et votre mot de passe."); return; }
+  b.disabled = true; b.textContent = "Vérification en cours…";
+  try{
+    const d = await api("/api/login", "POST", {identifiant, mdp});
+    if(d.ok){ $("mdp").value = ""; await charger(); } else erreur(d.message || "Connexion refusée.");
+  }catch(x){ erreur("Le serveur ne répond pas. Réessayez dans quelques instants."); }
+  b.disabled = false; b.textContent = "Se connecter";
 });
 
-init().then(() => app.listen(PORT, () => console.log(`Serveur démarré : http://localhost:${PORT}`)))
-  .catch(e => { console.error('Impossible de démarrer :', e.message); process.exit(1); });
+$("deco").addEventListener("click", async () => { await api("/api/logout", "POST"); montrerConnexion(); });
+
+$("onglets").addEventListener("click", ev => {
+  const b = ev.target.closest("[data-vue]"); if(!b) return;
+  vue = b.dataset.vue; edit = null; if(vue === "personnel" && cmd()) fiche = null; render();
+});
+
+$("contenu").addEventListener("input", ev => {
+  if(ev.target.id !== "rech") return;
+  q = ev.target.value; const p = ev.target.selectionStart; render(); const r = $("rech"); r.focus(); r.setSelectionRange(p, p);
+});
+
+$("contenu").addEventListener("click", async ev => {
+  const a = ev.target.closest("[data-id],[data-abs],[data-annuler],[data-retour],[data-edit]"); if(!a) return;
+  ev.preventDefault();
+  if(a.dataset.id){ fiche = Number(a.dataset.id); vue = "personnel"; edit = null; render(); }
+  else if(a.dataset.retour){ if(edit !== null) edit = null; else fiche = null; render(); }
+  else if(a.dataset.edit){ edit = a.dataset.edit === "new" ? "new" : Number(a.dataset.edit); render(); }
+  else{
+    let d;
+    if(a.dataset.annuler){ if(!confirm("Annuler cette sanction ? Elle restera visible dans le dossier, barrée.")) return; a.disabled = true; d = await api(`/api/sanctions/${a.dataset.annuler}/annuler`, "POST"); }
+    else{ a.disabled = true; d = await api(`/api/absences/${a.dataset.abs}/statut`, "POST", {statut: a.dataset.act}); }
+    if(d.ok) await charger(); else { a.disabled = false; alert(d.message || "Échec."); }
+  }
+});
+
+$("contenu").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target, b = f.querySelector("button"), m = f.querySelector(".msg"), a = f.dataset.a;
+  const v = Object.fromEntries(new FormData(f)); m.textContent = ""; b.disabled = true;
+  let d;
+  if(a === "agent-new") d = await api("/api/agents", "POST", v);
+  else if(a === "agent-edit") d = await api(`/api/agents/${edit}`, "PUT", v);
+  else d = await api("/api/" + (a === "sanction" ? "sanctions" : "absences"), "POST", Object.assign({agent_id: fiche}, v));
+  if(!d.ok){ m.textContent = d.message || "Échec de l'enregistrement."; b.disabled = false; return; }
+  if(a === "agent-new") fiche = d.id;
+  edit = null; await charger();
+});
+
+charger();
