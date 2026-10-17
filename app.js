@@ -6,9 +6,15 @@ let M = null, D = null, vue = "personnel", fiche = null, edit = null, q = "";
 const cmd = () => M && (M.role === "commandement" || M.role === "officier");
 const ROLES = [["gendarme", "Gendarme"], ["officier", "Officier"], ["commandement", "Commandement"]];
 const roleNom = r => (ROLES.find(x => x[0] === r) || [0, r || ""])[1];
-const GRADES = ["Gendarme adjoint volontaire", "Brigadier", "Brigadier-Chef", "Gendarme Sous Contrat", "Gendarme de Carrière", "Maréchal des logis", "Maréchal des logis-chef",
+const GRADES = ["Gendarme adjoint volontaire", "Brigadier", "Brigadier-chef", "Gendarme Sous Contrat", "Gendarme de Carrière", "Maréchal des logis", "Maréchal des logis-chef",
   "Adjudant", "Adjudant-chef", "Major", "Aspirant", "Sous-lieutenant", "Lieutenant", "Capitaine", "Commandant",
   "Lieutenant-colonel", "Colonel", "Général de brigade"];
+const DELAI = 600000; // "Annuler" n'est proposé que 10 minutes après la création
+let decalage = 0; // écart entre l'horloge du serveur et celle du navigateur
+const maintenant = () => Date.now() + decalage;
+const boutonAnnuler = s => { const exp = s.cree_le ? Number(s.cree_le) + DELAI : 0;
+  return !s.annulee && exp > maintenant() ? `<button class="pt sec" data-annuler="${s.id}" data-exp="${exp}">Annuler</button>` : ""; };
+const peutSupprimer = p => cmd() && p.id !== M.id && (p.role !== "commandement" || M.role === "commandement");
 const gradeOpts = g => [["", "— Choisir un grade —"]].concat(g && !GRADES.includes(g) ? [g] : [], GRADES);
 
 async function api(url, method, body){
@@ -24,7 +30,7 @@ function erreur(t){ $("msg").textContent = t; $("alerte").classList.add("on"); }
 async function charger(){
   const d = await api("/api/donnees");
   if(!d.ok){ montrerConnexion(); return false; }
-  D = d; M = d.moi;
+  D = d; M = d.moi; decalage = (d.maintenant || Date.now()) - Date.now();
   if(!cmd() && d.personnel.length === 1 && fiche === null) fiche = d.personnel[0].id;
   $("qui").textContent = [M.grade, M.prenom, M.nom].filter(Boolean).join(" ");
   $("role").textContent = roleNom(M.role);
@@ -56,12 +62,12 @@ function vListe(){
 function tabSanc(a, avecNom){
   return a.length ? `<div class="tw"><table><thead><tr><th>Date</th>${avecNom ? "<th>Agent</th>" : ""}<th>Type</th><th>Motif</th><th>Par</th>${cmd() ? "<th></th>" : ""}</tr></thead><tbody>` +
     a.map(s => `<tr class="${s.annulee ? "ann" : ""}"><td>${dt(s.date)}</td>${avecNom ? `<td>${lien(s.agent_id)}</td>` : ""}<td>${e(s.type)}${s.annulee ? " " + badge("Annulée") : ""}</td><td>${e(s.motif)}</td><td>${e(s.par)}</td>` +
-      (cmd() ? `<td>${s.annulee ? "" : `<button class="pt sec" data-annuler="${s.id}">Annuler</button>`}</td>` : "") + `</tr>`).join("") + `</tbody></table></div>` : `<p class="vide">Aucune sanction.</p>`;
+      (cmd() ? `<td>${boutonAnnuler(s)} <button class="pt dan" data-sup-sanc="${s.id}">Supprimer</button></td>` : "") + `</tr>`).join("") + `</tbody></table></div>` : `<p class="vide">Aucune sanction.</p>`;
 }
 function tabAbs(a, avecNom){
   return a.length ? `<div class="tw"><table><thead><tr>${avecNom ? "<th>Agent</th>" : ""}<th>Du</th><th>Au</th><th>Motif</th><th>Statut</th>${cmd() ? "<th></th>" : ""}</tr></thead><tbody>` +
     a.map(x => `<tr>${avecNom ? `<td>${lien(x.agent_id)}</td>` : ""}<td>${dt(x.debut)}</td><td>${dt(x.fin)}</td><td>${e(x.motif)}</td><td>${badge(x.statut, {"Validée":"v","Refusée":"r"}[x.statut])}</td>` +
-      (cmd() ? `<td>${x.statut === "En attente" ? `<button class="pt" data-act="Validée" data-abs="${x.id}">Valider</button> <button class="pt sec" data-act="Refusée" data-abs="${x.id}">Refuser</button>` : ""}</td>` : "") + `</tr>`).join("") + `</tbody></table></div>` : `<p class="vide">Aucune absence.</p>`;
+      (cmd() ? `<td>${x.statut === "En attente" ? `<button class="pt" data-act="Validée" data-abs="${x.id}">Valider</button> <button class="pt sec" data-act="Refusée" data-abs="${x.id}">Refuser</button> ` : ""}<button class="pt dan" data-sup-abs="${x.id}">Supprimer</button></td>` : "") + `</tr>`).join("") + `</tbody></table></div>` : `<p class="vide">Aucune absence.</p>`;
 }
 const vSanctions = () => `<h3 class="t0">Sanctions</h3>` + tabSanc(D.sanctions, true);
 const vAbsences = () => `<h3 class="t0">Absences</h3>` + tabAbs(D.absences, true);
@@ -69,7 +75,7 @@ const vAbsences = () => `<h3 class="t0">Absences</h3>` + tabAbs(D.absences, true
 function vFiche(){
   const p = agent(fiche); if(!p){ fiche = null; return vListe(); }
   const mien = x => x.agent_id === fiche;
-  return `<div class="haut">` + (cmd() ? `<button class="sec pt" type="button" data-retour="1">← Retour à la liste</button><button class="sec pt" type="button" data-edit="${p.id}">Modifier la fiche</button>` : "") + `</div>` +
+  return `<div class="haut">` + (cmd() ? `<button class="sec pt" type="button" data-retour="1">← Retour à la liste</button><button class="sec pt" type="button" data-edit="${p.id}">Modifier la fiche</button>` + (peutSupprimer(p) ? `<button class="dan pt" type="button" data-sup-agent="${p.id}">Supprimer le dossier</button>` : "") : "") + `</div>` +
     `<h2>${e(p.prenom)} ${e(p.nom)}</h2>` +
     `<dl><dt>NIGEND</dt><dd>${e(p.identifiant)}</dd><dt>Rôle</dt><dd>${e(roleNom(p.role))}</dd><dt>Grade</dt><dd>${e(p.grade)}</dd><dt>Pseudo Roblox</dt><dd>${e(p.roblox)}</dd><dt>Discord</dt><dd>${e(p.discord)}</dd><dt>Date d'entrée</dt><dd>${dt(p.date_entree)}</dd><dt>Statut</dt><dd>${e(p.statut)}</dd></dl>` +
     `<h3>Dossier disciplinaire</h3>` + tabSanc(D.sanctions.filter(mien), false) +
@@ -118,7 +124,7 @@ $("contenu").addEventListener("input", ev => {
 });
 
 $("contenu").addEventListener("click", async ev => {
-  const a = ev.target.closest("[data-id],[data-abs],[data-annuler],[data-retour],[data-edit]"); if(!a) return;
+  const a = ev.target.closest("[data-id],[data-abs],[data-annuler],[data-retour],[data-edit],[data-sup-sanc],[data-sup-abs],[data-sup-agent]"); if(!a) return;
   ev.preventDefault();
   if(a.dataset.id){ fiche = Number(a.dataset.id); vue = "personnel"; edit = null; render(); }
   else if(a.dataset.retour){ if(edit !== null) edit = null; else fiche = null; render(); }
@@ -126,6 +132,11 @@ $("contenu").addEventListener("click", async ev => {
   else{
     let d;
     if(a.dataset.annuler){ if(!confirm("Annuler cette sanction ? Elle restera visible dans le dossier, barrée.")) return; a.disabled = true; d = await api(`/api/sanctions/${a.dataset.annuler}/annuler`, "POST"); }
+    else if(a.dataset.supSanc){ if(!confirm("Supprimer définitivement cette sanction du dossier ?")) return; a.disabled = true; d = await api(`/api/sanctions/${a.dataset.supSanc}`, "DELETE"); }
+    else if(a.dataset.supAbs){ if(!confirm("Supprimer définitivement cette absence ?")) return; a.disabled = true; d = await api(`/api/absences/${a.dataset.supAbs}`, "DELETE"); }
+    else if(a.dataset.supAgent){ const p = agent(Number(a.dataset.supAgent));
+      if(!confirm(`Supprimer définitivement le dossier de ${p ? p.prenom + " " + p.nom : "cet agent"} ? Ses sanctions et ses absences seront aussi supprimées. Cette action est irréversible.`)) return;
+      a.disabled = true; d = await api(`/api/agents/${a.dataset.supAgent}`, "DELETE"); if(d.ok) fiche = null; }
     else{ a.disabled = true; d = await api(`/api/absences/${a.dataset.abs}/statut`, "POST", {statut: a.dataset.act}); }
     if(d.ok) await charger(); else { a.disabled = false; alert(d.message || "Échec."); }
   }
@@ -143,5 +154,8 @@ $("contenu").addEventListener("submit", async ev => {
   if(a === "agent-new") fiche = d.id;
   edit = null; await charger();
 });
+
+// retire le bouton « Annuler » dès que les 10 minutes sont écoulées (sans recharger la page)
+setInterval(() => document.querySelectorAll("[data-exp]").forEach(b => { if(Number(b.dataset.exp) <= maintenant()) b.remove(); }), 10000);
 
 charger();
