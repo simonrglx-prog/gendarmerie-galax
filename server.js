@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS absences(
 CREATE TABLE IF NOT EXISTS sessions(
   token TEXT PRIMARY KEY, agent_id INTEGER NOT NULL REFERENCES agents(id), expire INTEGER);
 `);
+  if (!(await all('PRAGMA table_info(sanctions)')).some(c => c.name === 'cree_le'))
+    await run('ALTER TABLE sanctions ADD COLUMN cree_le INTEGER'); // heure de création (pour le délai d'annulation)
   await run("UPDATE agents SET role='gendarme' WHERE role='agent'"); // ancien nom du rôle
   if (!(await one('SELECT 1 AS x FROM agents LIMIT 1'))) {
     const mdp = process.env.ADMIN_PASSWORD || crypto.randomBytes(6).toString('base64url');
@@ -110,7 +112,7 @@ app.get('/api/donnees', session, h(async (q, s) => {
   const c = gere(q.moi), p = c ? [] : [q.moi.id];
   const cols = 'id,identifiant,role,nom,prenom,grade,roblox,discord,date_entree,statut';
   s.json({
-    ok: true,
+    ok: true, maintenant: Date.now(),
     moi: { id: q.moi.id, nom: q.moi.nom, prenom: q.moi.prenom, grade: q.moi.grade, role: q.moi.role },
     personnel: await all(`SELECT ${cols} FROM agents${c ? '' : ' WHERE id=?'} ORDER BY nom, prenom`, p),
     sanctions: await all(`SELECT * FROM sanctions${c ? '' : ' WHERE agent_id=?'} ORDER BY date DESC, id DESC`, p),
@@ -161,12 +163,22 @@ app.post('/api/sanctions', session, cmd, h(async (q, s) => {
   const aid = Number(q.body.agent_id), type = txt(q.body.type, 40), motif = txt(q.body.motif);
   if (!(await existe(aid))) return err(s, 400, 'Agent inconnu.');
   if (!TYPES.includes(type) || !motif) return err(s, 400, 'Le type et le motif sont obligatoires.');
-  await run('INSERT INTO sanctions(agent_id,date,type,motif,par) VALUES(?,?,?,?,?)',
-    [aid, aujourdhui(), type, motif, `${q.moi.prenom} ${q.moi.nom}`.trim()]);
+  await run('INSERT INTO sanctions(agent_id,date,type,motif,par,cree_le) VALUES(?,?,?,?,?,?)',
+    [aid, aujourdhui(), type, motif, `${q.moi.prenom} ${q.moi.nom}`.trim(), Date.now()]);
   s.json({ ok: true });
 }));
+const DELAI_ANNULATION = 10 * 60 * 1000; // 10 minutes
 app.post('/api/sanctions/:id/annuler', session, cmd, h(async (q, s) => {
-  await run('UPDATE sanctions SET annulee=1 WHERE id=?', [Number(q.params.id)]);
+  const x = await one('SELECT * FROM sanctions WHERE id=?', [Number(q.params.id)]);
+  if (!x) return err(s, 404, 'Sanction introuvable.');
+  if (x.annulee) return err(s, 400, 'Cette sanction est déjà annulée.');
+  if (!x.cree_le || Date.now() - Number(x.cree_le) > DELAI_ANNULATION)
+    return err(s, 403, "Le délai d'annulation de 10 minutes est dépassé. Vous pouvez supprimer la sanction.");
+  await run('UPDATE sanctions SET annulee=1 WHERE id=?', [x.id]);
+  s.json({ ok: true });
+}));
+app.delete('/api/sanctions/:id', session, cmd, h(async (q, s) => {
+  await run('DELETE FROM sanctions WHERE id=?', [Number(q.params.id)]);
   s.json({ ok: true });
 }));
 
@@ -181,6 +193,25 @@ app.post('/api/absences', session, h(async (q, s) => {
 app.post('/api/absences/:id/statut', session, cmd, h(async (q, s) => {
   if (!['Validée', 'Refusée'].includes(q.body.statut)) return err(s, 400, 'Statut invalide.');
   await run('UPDATE absences SET statut=? WHERE id=?', [q.body.statut, Number(q.params.id)]);
+  s.json({ ok: true });
+}));
+
+app.delete('/api/absences/:id', session, cmd, h(async (q, s) => {
+  await run('DELETE FROM absences WHERE id=?', [Number(q.params.id)]);
+  s.json({ ok: true });
+}));
+
+app.delete('/api/agents/:id', session, cmd, h(async (q, s) => {
+  const a = await one('SELECT * FROM agents WHERE id=?', [Number(q.params.id)]);
+  if (!a) return err(s, 404, 'Agent introuvable.');
+  if (a.id === q.moi.id) return err(s, 400, 'Vous ne pouvez pas supprimer votre propre dossier.');
+  if (a.role === 'commandement' && q.moi.role !== 'commandement') return err(s, 403, 'Seul le commandement peut supprimer un dossier du commandement.');
+  await db.batch([
+    { sql: 'DELETE FROM sessions WHERE agent_id=?', args: [a.id] },
+    { sql: 'DELETE FROM sanctions WHERE agent_id=?', args: [a.id] },
+    { sql: 'DELETE FROM absences WHERE agent_id=?', args: [a.id] },
+    { sql: 'DELETE FROM agents WHERE id=?', args: [a.id] }
+  ], 'write');
   s.json({ ok: true });
 }));
 
