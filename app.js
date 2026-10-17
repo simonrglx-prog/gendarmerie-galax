@@ -6,7 +6,7 @@ let M = null, D = null, vue = "personnel", fiche = null, edit = null, q = "";
 const cmd = () => M && (M.role === "commandement" || M.role === "officier");
 const ROLES = [["gendarme", "Gendarme"], ["officier", "Officier"], ["commandement", "Commandement"]];
 const roleNom = r => (ROLES.find(x => x[0] === r) || [0, r || ""])[1];
-const GRADES = ["Gendarme adjoint volontaire", "Brigadier", "Brigadier-cHEF", "Gendarme Sous Contrat", "Gendarme de Carrière", "Maréchal des logis", "Maréchal des logis-chef",
+const GRADES = ["Gendarme adjoint volontaire", "Brigadier", "Brigadier-Chef", "Gendarme Sous Contrat", "Gendarme de Carrière", "Maréchal des logis", "Maréchal des logis-chef",
   "Adjudant", "Adjudant-chef", "Major", "Aspirant", "Sous-lieutenant", "Lieutenant", "Capitaine", "Commandant",
   "Lieutenant-colonel", "Colonel", "Général de brigade"];
 const gradeOpts = g => [["", "— Choisir un grade —"]].concat(g && !GRADES.includes(g) ? [g] : [], GRADES);
